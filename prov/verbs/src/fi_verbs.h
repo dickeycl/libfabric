@@ -86,7 +86,6 @@
 #define VERBS_RESOLVE_TIMEOUT 2000	// ms
 
 #define VERBS_PROV_NAME "verbs"
-#define VERBS_PROV_VERS FI_VERSION(1,0)
 
 #define VERBS_DBG(subsys, ...) FI_DBG(&vrb_prov, subsys, __VA_ARGS__)
 #define VERBS_INFO(subsys, ...) FI_INFO(&vrb_prov, subsys, __VA_ARGS__)
@@ -275,7 +274,9 @@ struct vrb_eq {
 	struct rdma_event_channel *channel;
 	uint64_t		flags;
 	struct fi_eq_err_entry	err;
+
 	ofi_epoll_t		epollfd;
+	enum fi_wait_obj	wait_obj;
 
 	struct {
 		/* The connection key map is used during the XRC connection
@@ -384,6 +385,7 @@ struct vrb_cq {
 	struct ibv_cq		*cq;
 	size_t			entry_size;
 	uint64_t		flags;
+	enum fi_wait_obj	wait_obj;
 	enum fi_cq_wait_cond	wait_cond;
 	struct ibv_wc		wc;
 	int			signal_fd[2];
@@ -529,7 +531,11 @@ enum vrb_xrc_ep_conn_state {
  * establishment and can be freed once bidirectional connectivity
  * is established.
  */
+#define VRB_MAX_XRC_CONNECT_RETRIES	16
+
 struct vrb_xrc_ep_conn_setup {
+	int				retry_count;
+
 	/* The connection tag is used to associate the reciprocal
 	 * XRC INI/TGT QP connection request in the reverse direction
 	 * with the original request. The tag is created by the

@@ -129,7 +129,7 @@ struct rxr_read_entry *rxr_read_alloc_entry(struct rxr_ep *ep, int entry_type, v
 		read_entry->rma_iov_count = rx_entry->rma_iov_count;
 		read_entry->rma_iov = rx_entry->rma_iov;
 
-		mr_desc = NULL;
+		mr_desc = rx_entry->desc;
 		total_iov_len = ofi_total_iov_len(rx_entry->iov, rx_entry->iov_count);
 		total_rma_iov_len = ofi_total_rma_iov_len(rx_entry->rma_iov, rx_entry->rma_iov_count);
 		read_entry->total_len = MIN(total_iov_len, total_rma_iov_len);
@@ -145,6 +145,20 @@ struct rxr_read_entry *rxr_read_alloc_entry(struct rxr_ep *ep, int entry_type, v
 				err = fi_mr_reg(rxr_ep_domain(ep)->rdm_domain,
 						read_entry->iov[i].iov_base, read_entry->iov[i].iov_len,
 						FI_RECV, 0, 0, 0, &read_entry->mr[i], NULL);
+
+				if (err == -FI_ENOMEM && efa_mr_cache_enable) {
+					/* In this case, we will try registration one more time because
+					 * mr cache will try to release MR when encountered error
+					 */
+					FI_WARN(&rxr_prov, FI_LOG_MR, "Unable to register MR buf for FI_ENOMEM!\n");
+					FI_WARN(&rxr_prov, FI_LOG_MR, "Try again because MR cache will try release to release unused MR entry.\n");
+					err = fi_mr_reg(rxr_ep_domain(ep)->rdm_domain,
+							read_entry->iov[i].iov_base, read_entry->iov[i].iov_len,
+							FI_RECV, 0, 0, 0, &read_entry->mr[i], NULL);
+					if (!err)
+						FI_WARN(&rxr_prov, FI_LOG_MR, "The 2nd attemp was successful!");
+				}
+
 				if (err) {
 					FI_WARN(&rxr_prov, FI_LOG_MR, "Unable to register MR buf\n");
 					return NULL;
@@ -156,6 +170,11 @@ struct rxr_read_entry *rxr_read_alloc_entry(struct rxr_ep *ep, int entry_type, v
 	} else {
 		assert(lower_ep_type == SHM_EP);
 		memset(read_entry->mr, 0, read_entry->iov_count * sizeof(struct fid_mr *));
+		/* FI_MR_VIRT_ADDR is not being set, use 0-based offset instead. */
+		if (!(shm_info->domain_attr->mr_mode & FI_MR_VIRT_ADDR)) {
+			for (i = 0; i < read_entry->rma_iov_count; ++i)
+				read_entry->rma_iov[i].addr = 0;
+		}
 	}
 
 	read_entry->lower_ep_type = lower_ep_type;
@@ -230,18 +249,16 @@ int rxr_read_init_iov(struct rxr_ep *ep,
 	struct rxr_peer *peer;
 
 	peer = rxr_ep_get_peer(ep, tx_entry->addr);
-	if (peer->is_local) {
-		for (i = 0; i < tx_entry->iov_count; ++i) {
-			assert(!tx_entry->mr[i]);
-			read_iov[i].addr = (uint64_t)tx_entry->iov[i].iov_base;
-			read_iov[i].len = tx_entry->iov[i].iov_len;
-			read_iov[i].key = 0;
-		}
-	} else if (tx_entry->desc[0]) {
+	assert(peer);
+
+	for (i = 0; i < tx_entry->iov_count; ++i) {
+		read_iov[i].addr = (uint64_t)tx_entry->iov[i].iov_base;
+		read_iov[i].len = tx_entry->iov[i].iov_len;
+	}
+
+	if (tx_entry->desc[0]) {
 		for (i = 0; i < tx_entry->iov_count; ++i) {
 			mr = (struct fid_mr *)tx_entry->desc[i];
-			read_iov[i].addr = (uint64_t)tx_entry->iov[i].iov_base;
-			read_iov[i].len = tx_entry->iov[i].iov_len;
 			read_iov[i].key = fi_mr_key(mr);
 		}
 	} else {
@@ -249,10 +266,16 @@ int rxr_read_init_iov(struct rxr_ep *ep,
 		if (!tx_entry->mr[0]) {
 			for (i = 0; i < tx_entry->iov_count; ++i) {
 				assert(!tx_entry->mr[i]);
-				err = fi_mr_regv(rxr_ep_domain(ep)->rdm_domain,
-						 tx_entry->iov + i, 1,
-						 FI_REMOTE_READ,
-						 0, 0, 0, &tx_entry->mr[i], NULL);
+
+				if (peer->is_local)
+					err = efa_mr_reg_shm(rxr_ep_domain(ep)->rdm_domain,
+							     tx_entry->iov + i,
+							     FI_REMOTE_READ, &tx_entry->mr[i]);
+				else
+					err = fi_mr_regv(rxr_ep_domain(ep)->rdm_domain,
+							 tx_entry->iov + i, 1,
+							 FI_REMOTE_READ,
+							 0, 0, 0, &tx_entry->mr[i], NULL);
 				if (err) {
 					FI_WARN(&rxr_prov, FI_LOG_MR,
 						"Unable to register MR buf %p as FI_REMOTE_READ",
@@ -264,8 +287,6 @@ int rxr_read_init_iov(struct rxr_ep *ep,
 
 		for (i = 0; i < tx_entry->iov_count; ++i) {
 			assert(tx_entry->mr[i]);
-			read_iov[i].addr = (uint64_t)tx_entry->iov[i].iov_base;
-			read_iov[i].len = tx_entry->iov[i].iov_len;
 			read_iov[i].key = fi_mr_key(tx_entry->mr[i]);
 		}
 	}

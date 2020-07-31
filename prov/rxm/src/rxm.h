@@ -57,10 +57,6 @@
 #ifndef _RXM_H_
 #define _RXM_H_
 
-#endif
-
-#define RXM_MAJOR_VERSION 1
-#define RXM_MINOR_VERSION 0
 
 #define RXM_CM_DATA_VERSION	1
 #define RXM_OP_VERSION		3
@@ -132,7 +128,9 @@ extern size_t rxm_msg_tx_size;
 extern size_t rxm_msg_rx_size;
 extern size_t rxm_def_univ_size;
 extern size_t rxm_cm_progress_interval;
+extern size_t rxm_cq_eq_fairness;
 extern int force_auto_progress;
+extern enum fi_wait_obj def_wait_obj;
 
 struct rxm_ep;
 
@@ -659,6 +657,7 @@ struct rxm_ep {
 	struct fid_ep 		*srx_ctx;
 	size_t 			comp_per_progress;
 	ofi_atomic32_t		atomic_tx_credits;
+	int			cq_eq_fairness;
 
 	bool			msg_mr_local;
 	bool			rdm_mr_local;
@@ -954,3 +953,5 @@ static inline int rxm_cq_write_recv_comp(struct rxm_rx_buf *rx_buf,
 				    flags, len, buf, rx_buf->pkt.hdr.data,
 				    rx_buf->pkt.hdr.tag);
 }
+
+#endif

@@ -53,6 +53,7 @@ size_t rxm_msg_rx_size		= 128;
 size_t rxm_def_univ_size	= 256;
 size_t rxm_eager_limit		= RXM_BUF_SIZE - sizeof(struct rxm_pkt);
 int force_auto_progress		= 0;
+enum fi_wait_obj def_wait_obj	= FI_WAIT_FD;
 
 char *rxm_proto_state_str[] = {
 	RXM_PROTO_STATES(OFI_STR)
@@ -191,13 +192,13 @@ static int rxm_init_info(void)
 	size_t param;
 
 	if (!fi_param_get_size_t(&rxm_prov, "buffer_size", &param)) {
-		if (param > sizeof(struct rxm_pkt)) {
-			rxm_eager_limit = param - sizeof(struct rxm_pkt);
-		} else {
+		if (param < sizeof(struct rxm_pkt) + sizeof(struct rxm_rndv_hdr)) {
 			FI_WARN(&rxm_prov, FI_LOG_CORE,
 				"Requested buffer size too small\n");
 			return -FI_EINVAL;
 		}
+
+		rxm_eager_limit = param - sizeof(struct rxm_pkt);
 	}
 	rxm_info.tx_attr->inject_size = rxm_eager_limit;
 	rxm_util_prov.info = &rxm_info;
@@ -353,12 +354,21 @@ static void rxm_fini(void)
 
 struct fi_provider rxm_prov = {
 	.name = OFI_UTIL_PREFIX "rxm",
-	.version = FI_VERSION(RXM_MAJOR_VERSION, RXM_MINOR_VERSION),
+	.version = OFI_VERSION_DEF_PROV,
 	.fi_version = OFI_VERSION_LATEST,
 	.getinfo = rxm_getinfo,
 	.fabric = rxm_fabric,
 	.cleanup = rxm_fini
 };
+
+static void rxm_param_get_def_wait(void)
+{
+	char *wait_str = NULL;
+
+	fi_param_get_str(&rxm_prov, "def_wait_obj", &wait_str);
+	if (wait_str && !strcasecmp(wait_str, "pollfd"))
+		def_wait_obj = FI_WAIT_POLLFD;
+}
 
 RXM_INI
 {
@@ -418,9 +428,20 @@ RXM_INI
 			"decrease noise during cq polling, but may result in "
 			"longer connection establishment times. (default: 10000).");
 
+	fi_param_define(&rxm_prov, "cq_eq_fairness", FI_PARAM_INT,
+			"Defines the maximum number of message provider CQ entries"
+			" that can be consecutively read across progress calls "
+			"without checking to see if the CM progress interval has "
+			"been reached. (default: 128).");
+
 	fi_param_define(&rxm_prov, "data_auto_progress", FI_PARAM_BOOL,
 			"Force auto-progress for data transfers even if app "
-			"requested manual progress (default: false/no) \n");
+			"requested manual progress (default: false/no).");
+
+	fi_param_define(&rxm_prov, "def_wait_obj", FI_PARAM_STRING,
+			"Specifies the default wait object used for blocking "
+			"operations (e.g. fi_cq_sread).  Supported values "
+			"are: fd and pollfd (default: fd).");
 
 	fi_param_get_size_t(&rxm_prov, "tx_size", &rxm_info.tx_attr->size);
 	fi_param_get_size_t(&rxm_prov, "rx_size", &rxm_info.rx_attr->size);
@@ -430,7 +451,11 @@ RXM_INI
 	if (fi_param_get_int(&rxm_prov, "cm_progress_interval",
 				(int *) &rxm_cm_progress_interval))
 		rxm_cm_progress_interval = 10000;
+	if (fi_param_get_int(&rxm_prov, "cq_eq_fairness",
+				(int *) &rxm_cq_eq_fairness))
+		rxm_cq_eq_fairness = 128;
 	fi_param_get_bool(&rxm_prov, "data_auto_progress", &force_auto_progress);
+	rxm_param_get_def_wait();
 
 	if (force_auto_progress)
 		FI_INFO(&rxm_prov, FI_LOG_CORE, "auto-progress for data requested "

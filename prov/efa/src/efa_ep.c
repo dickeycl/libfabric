@@ -32,11 +32,35 @@
  */
 
 #include "config.h"
-
 #include "efa.h"
 
+#include <sys/time.h>
 #include <infiniband/efadv.h>
 #define EFA_CQ_PROGRESS_ENTRIES 500
+
+static int efa_generate_qkey()
+{
+	struct timeval tv;
+	struct timezone tz;
+	uint32_t val;
+	int err;
+
+	err = gettimeofday(&tv, &tz);
+	if (err) {
+		EFA_WARN(FI_LOG_EP_CTRL, "Cannot gettimeofday, err=%d.\n", err);
+		return 0;
+	}
+
+	/* tv_usec is in range [0,1,000,000), shift it by 12 to [0,4,096,000,000 */
+	val = (tv.tv_usec << 12) + tv.tv_sec;
+
+	val = ofi_xorshift_random(val);
+
+	/* 0x80000000 and up is privileged Q Key range. */
+	val &= 0x7fffffff;
+
+	return val;
+}
 
 static int efa_ep_destroy_qp(struct efa_qp *qp)
 {
@@ -121,8 +145,7 @@ static int efa_ep_create_qp_ex(struct efa_ep *ep,
 	}
 
 	qp->ibv_qp_ex = ibv_qp_to_qp_ex(qp->ibv_qp);
-	srandom(time(NULL));
-	qp->qkey = random() & 0x7fffffff;
+	qp->qkey = efa_generate_qkey();
 	err = efa_ep_modify_qp_rst2rts(qp);
 	if (err)
 		goto err_destroy_qp;
@@ -397,11 +420,11 @@ static int efa_ep_enable(struct fid_ep *ep_fid)
 
 	attr_ex.cap.max_inline_data = ep->domain->ctx->inline_buf_size;
 
-	if (ep->domain->rdm) {
+	if (ep->domain->type == EFA_DOMAIN_RDM) {
 		attr_ex.qp_type = IBV_QPT_DRIVER;
 		attr_ex.comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
 		attr_ex.send_ops_flags = IBV_QP_EX_WITH_SEND;
-		if (efa_support_rdma_read(&ep->util_ep.ep_fid))
+		if (efa_ep_support_rdma_read(&ep->util_ep.ep_fid))
 			attr_ex.send_ops_flags |= IBV_QP_EX_WITH_RDMA_READ;
 		attr_ex.pd = ibv_pd;
 	} else {

@@ -107,6 +107,9 @@ int rxr_mr_regattr(struct fid *domain_fid, const struct fi_mr_attr *attr,
 	rxr_domain = container_of(domain_fid, struct rxr_domain,
 				  util_domain.domain_fid.fid);
 
+	if (attr->iface == FI_HMEM_CUDA)
+		flags |= OFI_MR_NOCACHE;
+
 	ret = fi_mr_regattr(rxr_domain->rdm_domain, attr, flags, mr);
 	if (ret) {
 		FI_WARN(&rxr_prov, FI_LOG_MR,
@@ -186,6 +189,8 @@ int rxr_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 	rxr_domain = calloc(1, sizeof(*rxr_domain));
 	if (!rxr_domain)
 		return -FI_ENOMEM;
+
+	rxr_domain->type = EFA_DOMAIN_RDM;
 
 	ret = rxr_get_lower_rdm_info(fabric->api_version, NULL, NULL, 0,
 				     &rxr_util_prov, info, &rdm_info);

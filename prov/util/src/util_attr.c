@@ -40,14 +40,6 @@
 #define OFI_RMA_DIRECTION_CAPS	(FI_READ | FI_WRITE | \
 				 FI_REMOTE_READ | FI_REMOTE_WRITE)
 
-#define OFI_IGNORED_TX_CAPS /* older Rx caps not applicable to Tx */ \
-	(FI_REMOTE_READ | FI_REMOTE_WRITE | FI_RECV | FI_DIRECTED_RECV | \
-	 FI_VARIABLE_MSG | FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
-	 FI_SOURCE_ERR)
-#define OFI_IGNORED_RX_CAPS /* Older Tx caps not applicable to Rx */ \
-	(FI_READ | FI_WRITE | FI_SEND | FI_FENCE | FI_MULTICAST | \
-	 FI_NAMED_RX_CTX)
-
 static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 {
 	if (user_format == FI_FORMAT_UNSPEC || prov_format == FI_FORMAT_UNSPEC)
@@ -457,7 +449,7 @@ static int fi_resource_mgmt_level(enum fi_resource_mgmt rm_model)
 static int ofi_cap_mr_mode(uint64_t info_caps, int mr_mode)
 {
 	if (!ofi_rma_target_allowed(info_caps)) {
-		if (!(mr_mode & FI_MR_LOCAL))
+		if (!(mr_mode & (FI_MR_LOCAL | FI_MR_HMEM)))
 			return 0;
 
 		mr_mode &= ~OFI_MR_MODE_RMA_TARGET;

@@ -483,14 +483,14 @@ static struct rxm_handle_txrx_ops rxm_rx_ops = {
 	.comp_eager_tx = rxm_finish_eager_send,
 	.handle_eager_rx = rxm_cq_handle_eager,
 	.handle_rndv_rx = rxm_cq_handle_rndv,
-	.handle_seg_data_rx =rxm_cq_handle_seg_data,
+	.handle_seg_data_rx = rxm_cq_handle_seg_data,
 };
 
 static struct rxm_handle_txrx_ops rxm_coll_rx_ops = {
 	.comp_eager_tx = rxm_finish_coll_eager_send,
 	.handle_eager_rx = rxm_cq_handle_coll_eager,
 	.handle_rndv_rx = rxm_cq_handle_rndv,
-	.handle_seg_data_rx =rxm_cq_handle_seg_data,
+	.handle_seg_data_rx = rxm_cq_handle_seg_data,
 };
 
 static int rxm_ep_cancel_recv(struct rxm_ep *rxm_ep,
@@ -2163,19 +2163,18 @@ static struct fi_ops_collective rxm_ops_collective_none = {
 
 static int rxm_ep_msg_res_close(struct rxm_ep *rxm_ep)
 {
-	int ret, retv = 0;
+	int ret = 0;
 
 	if (rxm_ep->srx_ctx) {
 		ret = fi_close(&rxm_ep->srx_ctx->fid);
 		if (ret) {
 			FI_WARN(&rxm_prov, FI_LOG_EP_CTRL, \
 				"Unable to close msg shared ctx\n");
-			retv = ret;
 		}
 	}
 
 	fi_freeinfo(rxm_ep->msg_info);
-	return retv;
+	return ret;
 }
 
 static int rxm_listener_close(struct rxm_ep *rxm_ep)
@@ -2237,8 +2236,9 @@ static int rxm_ep_close(struct fid *fid)
 static int rxm_ep_trywait_cq(void *arg)
 {
 	struct rxm_fabric *rxm_fabric;
-	struct rxm_ep *rxm_ep = (struct rxm_ep *)arg;
-	struct fid *fids[1] = {&rxm_ep->msg_cq->fid};
+	fid_t fid = arg;
+	struct rxm_ep *rxm_ep = fid->context;
+	struct fid *fids[1] = { &rxm_ep->msg_cq->fid };
 	int ret;
 
 	rxm_fabric = container_of(rxm_ep->util_ep.domain->fabric,
@@ -2252,8 +2252,9 @@ static int rxm_ep_trywait_cq(void *arg)
 static int rxm_ep_trywait_eq(void *arg)
 {
 	struct rxm_fabric *rxm_fabric;
-	struct rxm_ep *rxm_ep = (struct rxm_ep *)arg;
-	struct fid *fids[1] = {&rxm_ep->msg_eq->fid};
+	fid_t fid = arg;
+	struct rxm_ep *rxm_ep = fid->context;
+	struct fid *fids[1] = { &rxm_ep->msg_eq->fid };
 
 	rxm_fabric = container_of(rxm_ep->util_ep.domain->fabric,
 				  struct rxm_fabric, util_fabric);
@@ -2262,34 +2263,17 @@ static int rxm_ep_trywait_eq(void *arg)
 
 static int rxm_ep_wait_fd_add(struct rxm_ep *rxm_ep, struct util_wait *wait)
 {
-	int msg_eq_fd, msg_cq_fd, ret;
+	int ret;
 
-	ret = fi_control(&rxm_ep->msg_cq->fid, FI_GETWAIT, &msg_cq_fd);
-	if (ret) {
-		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL,
-			"unable to get MSG CQ wait fd %d\n", ret);
-		return ret;
-	}
+	ret = ofi_wait_add_fid(wait, &rxm_ep->msg_cq->fid, POLLIN,
+			       rxm_ep_trywait_cq);
 
-	ret = ofi_wait_fd_add(wait, msg_cq_fd, OFI_EPOLL_IN,
-			      rxm_ep_trywait_cq, rxm_ep,
-			      &rxm_ep->util_ep.ep_fid.fid);
-	if (ret)
+	if (ret || (rxm_ep->util_ep.domain->data_progress == FI_PROGRESS_AUTO &&
+	    !(rxm_ep->util_ep.caps & FI_ATOMIC)))
 		return ret;
 
-	if (rxm_ep->util_ep.domain->data_progress == FI_PROGRESS_AUTO &&
-	    !(rxm_ep->util_ep.caps & FI_ATOMIC))
-		return 0;
-
-	ret = fi_control(&rxm_ep->msg_eq->fid, FI_GETWAIT, &msg_eq_fd);
-	if (ret) {
-		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL,
-			"unable to get MSG EQ wait fd %d\n", ret);
-		return ret;
-	}
-
-	return ofi_wait_fd_add(wait, msg_eq_fd, OFI_EPOLL_IN, rxm_ep_trywait_eq,
-			       rxm_ep, &rxm_ep->util_ep.ep_fid.fid);
+	return ofi_wait_add_fid(wait, &rxm_ep->msg_eq->fid, POLLIN,
+				rxm_ep_trywait_eq);
 }
 
 static int rxm_msg_cq_fd_needed(struct rxm_ep *rxm_ep)
@@ -2327,11 +2311,13 @@ static int rxm_ep_msg_cq_open(struct rxm_ep *rxm_ep)
 			rxm_ep->msg_info->rx_attr->size) * rxm_def_univ_size;
 	cq_attr.format = FI_CQ_FORMAT_DATA;
 	cq_attr.wait_obj = (rxm_msg_cq_fd_needed(rxm_ep) ?
-			    FI_WAIT_FD : FI_WAIT_NONE);
+			    def_wait_obj : FI_WAIT_NONE);
 
-	rxm_domain = container_of(rxm_ep->util_ep.domain, struct rxm_domain, util_domain);
+	rxm_domain = container_of(rxm_ep->util_ep.domain, struct rxm_domain,
+				  util_domain);
 
-	ret = fi_cq_open(rxm_domain->msg_domain, &cq_attr, &rxm_ep->msg_cq, NULL);
+	ret = fi_cq_open(rxm_domain->msg_domain, &cq_attr, &rxm_ep->msg_cq,
+			 rxm_ep);
 	if (ret) {
 		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL, "unable to open MSG CQ\n");
 		return ret;
@@ -2358,6 +2344,7 @@ static int rxm_ep_msg_cq_open(struct rxm_ep *rxm_ep)
 	return 0;
 err:
 	fi_close(&rxm_ep->msg_cq->fid);
+	rxm_ep->msg_cq = NULL;
 	return ret;
 }
 
@@ -2568,12 +2555,13 @@ static int rxm_listener_open(struct rxm_ep *rxm_ep)
 		.wait_obj = FI_WAIT_UNSPEC,
 		.flags = FI_WRITE,
 	};
+	struct rxm_fabric *rxm_fabric;
 	int ret;
-	struct rxm_fabric *rxm_fabric =
-		container_of(rxm_ep->util_ep.domain->fabric,
-			     struct rxm_fabric, util_fabric);
 
-	ret = fi_eq_open(rxm_fabric->msg_fabric, &eq_attr, &rxm_ep->msg_eq, NULL);
+	rxm_fabric = container_of(rxm_ep->util_ep.domain->fabric,
+				  struct rxm_fabric, util_fabric);
+	ret = fi_eq_open(rxm_fabric->msg_fabric, &eq_attr, &rxm_ep->msg_eq,
+			 rxm_ep);
 	if (ret) {
 		FI_WARN(&rxm_prov, FI_LOG_EP_CTRL, "Unable to open msg EQ\n");
 		return ret;
@@ -2636,8 +2624,10 @@ static int rxm_ep_msg_res_open(struct rxm_ep *rxm_ep)
 
 	return 0;
 err2:
-	if (rxm_ep->srx_ctx)
+	if (rxm_ep->srx_ctx) {
 		fi_close(&rxm_ep->srx_ctx->fid);
+		rxm_ep->srx_ctx = NULL;
+	}
 err1:
 	fi_freeinfo(rxm_ep->msg_info);
 	return ret;

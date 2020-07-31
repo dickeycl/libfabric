@@ -1,15 +1,15 @@
 dnl
 dnl Copyright (c) 2016-2017 Cisco Systems, Inc.  All rights reserved.
-dnl Copyright (c) 2018-2019 Intel Corporation, Inc.  All rights reserved.
+dnl Copyright (c) 2018-2020 Intel Corporation, Inc.  All rights reserved.
 dnl
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.57)
-AC_INIT([fabtests], [1.10.0a1], [ofiwg@lists.openfabrics.org])
+AC_INIT([fabtests], [1.10.1], [ofiwg@lists.openfabrics.org])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR(config)
 AC_CONFIG_HEADERS(config.h)
-AM_INIT_AUTOMAKE([1.11 dist-bzip2 foreign -Wall -Werror subdir-objects])
+AM_INIT_AUTOMAKE([1.11 dist-bzip2 foreign -Wall -Werror subdir-objects tar-pax])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
 AC_CANONICAL_HOST

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 201-2020 Intel Corporation, Inc.  All rights reserved.
+ * Copyright (c) 2017-2020 Intel Corporation, Inc.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -62,9 +62,6 @@
 #ifndef _TCP_H_
 #define _TCP_H_
 
-#define TCPX_MAJOR_VERSION 	1
-#define TCPX_MINOR_VERSION 	0
-
 #define TCPX_HDR_VERSION	3
 #define TCPX_CTRL_HDR_VERSION	3
 
@@ -72,7 +69,7 @@
 #define TCPX_IOV_LIMIT		(4)
 #define TCPX_MAX_INJECT_SZ	(64)
 
-#define MAX_EPOLL_EVENTS	100
+#define MAX_POLL_EVENTS		100
 #define STAGE_BUF_SIZE		512
 
 #define TCPX_MIN_MULTI_RECV	16384
@@ -208,7 +205,7 @@ struct tcpx_ep {
 	void (*hdr_bswap)(struct tcpx_base_hdr *hdr);
 	struct stage_buf	stage_buf;
 	size_t			min_multi_recv_size;
-	bool			epoll_out_set;
+	bool			pollout_set;
 };
 
 struct tcpx_fabric {

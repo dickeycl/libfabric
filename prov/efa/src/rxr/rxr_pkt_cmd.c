@@ -34,6 +34,7 @@
 #include "efa.h"
 #include "rxr.h"
 #include "rxr_cntr.h"
+#include "efa_cuda.h"
 
 /* This file implements 4 actions that can be applied to a packet:
  *          posting,
@@ -62,7 +63,7 @@ ssize_t rxr_pkt_post_data(struct rxr_ep *rxr_ep,
 	data_pkt = (struct rxr_data_pkt *)pkt_entry->pkt;
 
 	data_pkt->hdr.type = RXR_DATA_PKT;
-	data_pkt->hdr.version = RXR_PROTOCOL_VERSION;
+	data_pkt->hdr.version = RXR_BASE_PROTOCOL_VERSION;
 	data_pkt->hdr.flags = 0;
 
 	data_pkt->hdr.rx_id = tx_entry->rx_id;
@@ -72,8 +73,15 @@ ssize_t rxr_pkt_post_data(struct rxr_ep *rxr_ep,
 	 */
 	data_pkt->hdr.seg_offset = tx_entry->bytes_sent;
 
-	if (efa_mr_cache_enable)
-		ret = rxr_pkt_send_data_mr_cache(rxr_ep, tx_entry, pkt_entry);
+	/*
+	 * TODO: Check to see if underlying device can support CUDA
+	 * registrations and fallback to rxr_ep_send_data_pkt_entry() if it does
+	 * not. This should be done at init time with a CUDA reg-and-fail flag.
+	 * For now, always send CUDA buffers through
+	 * rxr_pkt_send_data_desc().
+	 */
+	if (efa_mr_cache_enable || rxr_ep_is_cuda_mr(tx_entry->desc[0]))
+		ret = rxr_pkt_send_data_desc(rxr_ep, tx_entry, pkt_entry);
 	else
 		ret = rxr_pkt_send_data(rxr_ep, tx_entry, pkt_entry);
 
@@ -249,10 +257,12 @@ ssize_t rxr_pkt_post_ctrl_once(struct rxr_ep *rxr_ep, int entry_type, void *x_en
 	}
 
 	peer = rxr_ep_get_peer(rxr_ep, addr);
-	if (peer->is_local)
+	if (peer->is_local) {
+		assert(rxr_ep->use_shm);
 		pkt_entry = rxr_pkt_entry_alloc(rxr_ep, rxr_ep->tx_pkt_shm_pool);
-	else
+	} else {
 		pkt_entry = rxr_pkt_entry_alloc(rxr_ep, rxr_ep->tx_pkt_efa_pool);
+	}
 
 	if (!pkt_entry)
 		return -FI_EAGAIN;
@@ -269,6 +279,10 @@ ssize_t rxr_pkt_post_ctrl_once(struct rxr_ep *rxr_ep, int entry_type, void *x_en
 	 */
 	if (inject)
 		err = rxr_pkt_entry_inject(rxr_ep, pkt_entry, addr);
+	else if (pkt_entry->iov_count > 0)
+		err = rxr_pkt_entry_sendv(rxr_ep, pkt_entry, addr,
+					  pkt_entry->iov, pkt_entry->desc,
+					  pkt_entry->iov_count, 0);
 	else
 		err = rxr_pkt_entry_send(rxr_ep, pkt_entry, addr);
 
@@ -277,8 +291,8 @@ ssize_t rxr_pkt_post_ctrl_once(struct rxr_ep *rxr_ep, int entry_type, void *x_en
 		return err;
 	}
 
+	peer->flags |= RXR_PEER_REQ_SENT;
 	rxr_pkt_handle_ctrl_sent(rxr_ep, pkt_entry);
-
 	if (inject)
 		rxr_pkt_entry_release_tx(rxr_ep, pkt_entry);
 
@@ -348,11 +362,9 @@ void rxr_pkt_handle_send_completion(struct rxr_ep *ep, struct fi_cq_data_entry *
 	struct rxr_peer *peer;
 
 	pkt_entry = (struct rxr_pkt_entry *)comp->op_context;
-	assert(rxr_get_base_hdr(pkt_entry->pkt)->version ==
-	       RXR_PROTOCOL_VERSION);
 
 	switch (rxr_get_base_hdr(pkt_entry->pkt)->type) {
-	case RXR_CONNACK_PKT:
+	case RXR_HANDSHAKE_PKT:
 		break;
 	case RXR_CTS_PKT:
 		break;
@@ -437,22 +449,21 @@ fi_addr_t rxr_pkt_insert_addr(struct rxr_ep *ep, struct rxr_pkt_entry *pkt_entry
 	struct rxr_base_hdr *base_hdr;
 
 	base_hdr = rxr_get_base_hdr(pkt_entry->pkt);
-	if (base_hdr->version != RXR_PROTOCOL_VERSION) {
-		char buffer[ep->core_addrlen * 3];
+	if (base_hdr->version < RXR_BASE_PROTOCOL_VERSION) {
+		char host_gid[ep->core_addrlen * 3];
 		int length = 0;
 
 		for (i = 0; i < ep->core_addrlen; i++)
-			length += sprintf(&buffer[length], "%02x ",
+			length += sprintf(&host_gid[length], "%02x ",
 					  ep->core_addr[i]);
 		FI_WARN(&rxr_prov, FI_LOG_CQ,
-			"Host %s:Invalid protocol version %d. Expected protocol version %d.\n",
-			buffer,
-			rxr_get_base_hdr(pkt_entry->pkt)->version,
-			RXR_PROTOCOL_VERSION);
+			"Host %s received a packet with invalid protocol version %d.\n"
+			"This host can only support protocol version %d and above.\n",
+			host_gid, base_hdr->version, RXR_BASE_PROTOCOL_VERSION);
 		efa_eq_write_error(&ep->util_ep, FI_EIO, -FI_EINVAL);
-		fprintf(stderr, "Invalid protocol version %d. Expected protocol version %d. %s:%d\n",
-			rxr_get_base_hdr(pkt_entry->pkt)->version,
-			RXR_PROTOCOL_VERSION, __FILE__, __LINE__);
+		fprintf(stderr, "Host %s received a packet with invalid protocol version %d.\n"
+			"This host can only support protocol version %d and above. %s:%d\n",
+			host_gid, base_hdr->version, RXR_BASE_PROTOCOL_VERSION, __FILE__, __LINE__);
 		abort();
 	}
 
@@ -483,9 +494,31 @@ void rxr_pkt_handle_recv_completion(struct rxr_ep *ep,
 	assert(pkt_entry->pkt_size > 0);
 
 	base_hdr = rxr_get_base_hdr(pkt_entry->pkt);
+	if (base_hdr->type >= RXR_EXTRA_REQ_PKT_END) {
+		FI_WARN(&rxr_prov, FI_LOG_CQ,
+			"Peer %d is requesting feature %d, which this EP does not support.\n",
+			(int)src_addr, base_hdr->type);
+
+		assert(0 && "invalid REQ packe type");
+		rxr_cq_handle_cq_error(ep, -FI_EIO);
+		return;
+	}
+
 	if (base_hdr->type >= RXR_REQ_PKT_BEGIN) {
 		rxr_pkt_proc_req_common_hdr(pkt_entry);
 		assert(pkt_entry->hdr_size > 0);
+		/*
+		 * as long as the REQ packet contain raw address
+		 * we will need to call insert because it might be a new
+		 * EP with new Q-Key.
+		 */
+		if (OFI_UNLIKELY(pkt_entry->raw_addr != NULL))
+			pkt_entry->addr = rxr_pkt_insert_addr(ep, pkt_entry);
+		else
+			pkt_entry->addr = src_addr;
+	} else {
+		assert(src_addr != FI_ADDR_NOTAVAIL);
+		pkt_entry->addr = src_addr;
 	}
 
 #if ENABLE_DEBUG
@@ -495,20 +528,16 @@ void rxr_pkt_handle_recv_completion(struct rxr_ep *ep,
 	rxr_ep_print_pkt("Received", ep, (struct rxr_base_hdr *)pkt_entry->pkt);
 #endif
 #endif
-	if (OFI_UNLIKELY(src_addr == FI_ADDR_NOTAVAIL))
-		pkt_entry->addr = rxr_pkt_insert_addr(ep, pkt_entry);
-	else
-		pkt_entry->addr = src_addr;
-
-	assert(rxr_get_base_hdr(pkt_entry->pkt)->version ==
-	       RXR_PROTOCOL_VERSION);
-
 	peer = rxr_ep_get_peer(ep, pkt_entry->addr);
+	if (!(peer->flags & RXR_PEER_HANDSHAKE_SENT))
+		rxr_pkt_post_handshake(ep, peer, pkt_entry->addr);
 
-	if (rxr_env.enable_shm_transfer && peer->is_local)
+	if (peer->is_local) {
+		assert(ep->use_shm);
 		ep->posted_bufs_shm--;
-	else
+	} else {
 		ep->posted_bufs_efa--;
+	}
 
 	switch (base_hdr->type) {
 	case RXR_RETIRED_RTS_PKT:
@@ -517,11 +546,17 @@ void rxr_pkt_handle_recv_completion(struct rxr_ep *ep,
 		assert(0 && "deprecated RTS pakcet received");
 		rxr_cq_handle_cq_error(ep, -FI_EIO);
 		return;
+	case RXR_RETIRED_CONNACK_PKT:
+		FI_WARN(&rxr_prov, FI_LOG_CQ,
+			"Received a CONNACK packet, which has been retired since protocol version 4\n");
+		assert(0 && "deprecated CONNACK pakcet received");
+		rxr_cq_handle_cq_error(ep, -FI_EIO);
+		return;
 	case RXR_EOR_PKT:
 		rxr_pkt_handle_eor_recv(ep, pkt_entry);
 		return;
-	case RXR_CONNACK_PKT:
-		rxr_pkt_handle_connack_recv(ep, pkt_entry, src_addr);
+	case RXR_HANDSHAKE_PKT:
+		rxr_pkt_handle_handshake_recv(ep, pkt_entry);
 		return;
 	case RXR_CTS_PKT:
 		rxr_pkt_handle_cts_recv(ep, pkt_entry);
@@ -580,13 +615,17 @@ void rxr_pkt_handle_recv_completion(struct rxr_ep *ep,
 #define RXR_PKT_DUMP_DATA_LEN 64
 
 static
-void rxr_pkt_print_connack(char *prefix,
-			   struct rxr_connack_hdr *connack_hdr)
+void rxr_pkt_print_handshake(char *prefix,
+			     struct rxr_handshake_hdr *handshake_hdr)
 {
 	FI_DBG(&rxr_prov, FI_LOG_EP_DATA,
-	       "%s RxR CONNACK packet - version: %" PRIu8
-	       " flags: %x\n", prefix, connack_hdr->version,
-	       connack_hdr->flags);
+	       "%s RxR HANDSHAKE packet - version: %" PRIu8
+	       " flags: %x\n", prefix, handshake_hdr->version,
+	       handshake_hdr->flags);
+
+	FI_DBG(&rxr_prov, FI_LOG_EP_DATA,
+	       "%s RxR HANDSHAKE packet, maxproto: %d\n",
+	       prefix, handshake_hdr->maxproto);
 }
 
 static
@@ -630,8 +669,8 @@ void rxr_pkt_print_data(char *prefix, struct rxr_data_pkt *data_pkt)
 void rxr_pkt_print(char *prefix, struct rxr_ep *ep, struct rxr_base_hdr *hdr)
 {
 	switch (hdr->type) {
-	case RXR_CONNACK_PKT:
-		rxr_pkt_print_connack(prefix, (struct rxr_connack_hdr *)hdr);
+	case RXR_HANDSHAKE_PKT:
+		rxr_pkt_print_handshake(prefix, (struct rxr_handshake_hdr *)hdr);
 		break;
 	case RXR_CTS_PKT:
 		rxr_pkt_print_cts(prefix, (struct rxr_cts_hdr *)hdr);

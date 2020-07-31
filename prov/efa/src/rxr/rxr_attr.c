@@ -37,9 +37,16 @@
 const uint32_t rxr_poison_value = 0xdeadbeef;
 #endif
 
-#define RXR_TX_CAPS (OFI_TX_MSG_CAPS | FI_TAGGED | OFI_TX_RMA_CAPS | FI_ATOMIC)
+#ifdef HAVE_LIBCUDA
+#define EFA_HMEM_CAP FI_HMEM
+#else
+#define EFA_HMEM_CAP 0
+#endif
+#define RXR_TX_CAPS (OFI_TX_MSG_CAPS | FI_TAGGED | OFI_TX_RMA_CAPS | \
+		     FI_ATOMIC | EFA_HMEM_CAP)
 #define RXR_RX_CAPS (OFI_RX_MSG_CAPS | FI_TAGGED | OFI_RX_RMA_CAPS | \
-		     FI_SOURCE | FI_MULTI_RECV | FI_DIRECTED_RECV | FI_ATOMIC)
+		     FI_SOURCE | FI_MULTI_RECV | FI_DIRECTED_RECV | \
+		     FI_ATOMIC | EFA_HMEM_CAP)
 #define RXR_DOM_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
 
 /* TODO: Add support for true FI_DELIVERY_COMPLETE */
@@ -75,7 +82,7 @@ struct fi_ep_attr rxr_ep_attr = {
 	.type = FI_EP_RDM,
 	.protocol = FI_PROTO_EFA,
 	.mem_tag_format = FI_TAG_GENERIC,
-	.protocol_version = RXR_PROTOCOL_VERSION,
+	.protocol_version = RXR_CUR_PROTOCOL_VERSION,
 	.max_msg_size = UINT64_MAX,
 	.tx_ctx_cnt = 1,
 	.rx_ctx_cnt = 1

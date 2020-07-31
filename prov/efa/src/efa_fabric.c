@@ -91,7 +91,7 @@ const struct fi_fabric_attr efa_fabric_attr = {
 	.fabric		= NULL,
 	.name		= NULL,
 	.prov_name	= NULL,
-	.prov_version	= EFA_PROV_VERS,
+	.prov_version	= OFI_VERSION_DEF_PROV,
 };
 
 const struct fi_domain_attr efa_domain_attr = {
@@ -100,8 +100,11 @@ const struct fi_domain_attr efa_domain_attr = {
 	.control_progress	= FI_PROGRESS_AUTO,
 	.data_progress		= FI_PROGRESS_AUTO,
 	.resource_mgmt		= FI_RM_DISABLED,
-
+#ifdef HAVE_LIBCUDA
+	.mr_mode		= OFI_MR_BASIC_MAP | FI_MR_LOCAL | FI_MR_BASIC | FI_MR_HMEM,
+#else
 	.mr_mode		= OFI_MR_BASIC_MAP | FI_MR_LOCAL | FI_MR_BASIC,
+#endif
 	.mr_key_size		= sizeof_field(struct ibv_sge, lkey),
 	.cq_data_size		= 0,
 	.tx_ctx_cnt		= 1024,
@@ -957,7 +960,7 @@ static void fi_efa_fini(void)
 
 struct fi_provider efa_prov = {
 	.name = EFA_PROV_NAME,
-	.version = EFA_PROV_VERS,
+	.version = OFI_VERSION_DEF_PROV,
 	.fi_version = OFI_VERSION_LATEST,
 	.getinfo = efa_getinfo,
 	.fabric = efa_fabric,
